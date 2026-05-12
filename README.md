@@ -5,8 +5,9 @@ module [`WWW::Bizowie::API`](https://metacpan.org/pod/WWW::Bizowie::API).
 
 * Minimum Java version: **8**
 * One runtime dependency: `jackson-databind`
-* Supports both the v1 (multipart) and v2 (JSON) Bizowie API endpoints
+* Targets the Bizowie v2 (JSON) endpoint at `/bz/apiv2/call/`
 * Builder-based construction, no reflection / annotations
+* Thread-safe: a single client can be shared across threads
 
 ## Install
 
@@ -16,23 +17,23 @@ module [`WWW::Bizowie::API`](https://metacpan.org/pod/WWW::Bizowie::API).
 <dependency>
     <groupId>com.bizowie</groupId>
     <artifactId>bizowie-api</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```kotlin
-implementation("com.bizowie:bizowie-api:0.5.0")
+implementation("com.bizowie:bizowie-api:0.6.0")
 ```
 
-## Usage
+## Quick start
 
 ```java
 import com.bizowie.api.BizowieAPI;
 import com.bizowie.api.BizowieAPIResponse;
 
-import java.util.Map;
+import java.util.Collections;
 
 BizowieAPI bz = BizowieAPI.builder()
     .apiKey("02cc7058-cd22-4c8e-ad7c-a8f3f2a64bd0")
@@ -50,38 +51,110 @@ if (r.isSuccess()) {
 }
 ```
 
-### Using the v2 endpoint
-
-```java
-BizowieAPI bz = BizowieAPI.builder()
-    .apiKey("...")
-    .secretKey("...")
-    .site("mysite.bizowie.com")
-    .v2(true)
-    .apiVersion("1.00")  // optional, defaults to "1.00"
-    .build();
-```
+## Configuration
 
 ### Builder options
 
-| Method            | Description                                                            |
-|-------------------|------------------------------------------------------------------------|
-| `apiKey(String)`  | Your Bizowie API key. *Required.*                                      |
-| `secretKey(String)` | Your Bizowie secret key. *Required.*                                 |
-| `site(String)`    | The hostname of your Bizowie instance. *Required.*                     |
-| `v2(boolean)`     | Route calls through the v2 endpoint (`/bz/apiv2/call/`).               |
-| `apiVersion(String)` | API version sent with v2 requests. Defaults to `"1.00"`.            |
-| `debug(boolean)`  | Print raw response bodies to stderr when JSON decoding fails.          |
-| `objectMapper(ObjectMapper)` | Provide a custom Jackson `ObjectMapper`.                    |
+| Method                       | Description                                                                                  |
+|------------------------------|----------------------------------------------------------------------------------------------|
+| `apiKey(String)`             | Bizowie-issued API key (UUID). **Required.**                                                 |
+| `secretKey(String)`          | Bizowie-issued secret key (UUID). **Required.**                                              |
+| `site(String)`               | Hostname of your Bizowie instance, e.g. `mysite.bizowie.com` (no scheme). **Required.**      |
+| `apiVersion(String)`         | `api_version` field sent with every request. Defaults to `"1.00"`.                           |
+| `debug(boolean)`             | Print raw response bodies to stderr when JSON decoding fails. Off by default.                |
+| `objectMapper(ObjectMapper)` | Provide a custom Jackson `ObjectMapper` (e.g. with `JavaTimeModule` registered).             |
+| `httpFactory(HttpFactory)`   | Replace the underlying transport. Useful for tests, custom TLS, proxies, or timeouts.        |
 
-### Responses
+### Overriding `api_version` per-call
+
+The builder's `apiVersion` value is the default. Any call may override it by
+including `api_version` in the parameter map:
+
+```java
+Map<String, Object> params = new HashMap<>();
+params.put("api_version", "2.50");
+bz.call("things/list", params);
+```
+
+## Requests
+
+Each `call(method, params)` translates to:
+
+* **URL** &mdash; `https://<site>/bz/apiv2/call/<method>` (HTTPS only)
+* **Method** &mdash; `POST`
+* **Headers** &mdash; `User-Agent: Bizowie::API`, `Content-Type: form-data`
+* **Body** &mdash; JSON object: your `params` merged with `api_key`,
+  `secret_key`, and `api_version`
+
+The `method` argument is the API path relative to `/bz/apiv2/call/` and may
+include positional segments, e.g. `"databases/add_note/3/10/123"`. Do not
+include a leading slash. `params` may be `null` (treated as empty).
+
+Caller-supplied parameters never overwrite `api_key` or `secret_key`, but
+they *can* override `api_version` (see above).
+
+## Responses
 
 `BizowieAPIResponse` exposes:
 
-* `boolean isSuccess()` &mdash; the `success` field, removed from `data`
-* `Map<String, Object> getData()` &mdash; the remaining decoded JSON body
+* `boolean isSuccess()` &mdash; the `success` field of the response, accepted
+  as either a JSON boolean or `1`/`0`. Removed from `getData()`.
+* `Map<String, Object> getData()` &mdash; the rest of the decoded JSON body.
 
-If the response cannot be decoded as JSON, `getData()` returns `{"unprocessed": 1}` and `isSuccess()` is `false`.
+If the response cannot be decoded as JSON, `getData()` returns
+`{"unprocessed": 1}` and `isSuccess()` is `false`. Enable `debug(true)` on the
+builder to dump the raw body to stderr when this happens.
+
+## Error handling
+
+* **Application errors** &mdash; the server returned valid JSON but with
+  `success: false` (or absent). Surface as a normal `BizowieAPIResponse`
+  whose `isSuccess()` is `false`; inspect `getData()` for details.
+* **Transport / config errors** &mdash; missing credentials, empty `method`,
+  network failures, malformed URLs, etc. Thrown as `BizowieAPIException`
+  (unchecked); the underlying `IOException`, if any, is preserved as the
+  cause.
+
+```java
+try {
+    BizowieAPIResponse r = bz.call("things/list", null);
+    if (!r.isSuccess()) {
+        log.warn("API call rejected: {}", r.getData());
+    }
+} catch (BizowieAPIException e) {
+    log.error("API call failed at transport layer", e);
+}
+```
+
+## Customizing transport
+
+`HttpFactory` is an SPI for substituting the underlying HTTP transport. It
+receives a fully-qualified URL and must return an open `HttpURLConnection`.
+Use it to:
+
+* Route requests through a proxy
+* Inject TLS configuration or a custom `SSLSocketFactory`
+* Apply connect / read timeouts
+* Redirect to a stub server in tests
+
+```java
+BizowieAPI bz = BizowieAPI.builder()
+    .apiKey("...").secretKey("...").site("mysite.bizowie.com")
+    .httpFactory(url -> {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(5_000);
+        c.setReadTimeout(30_000);
+        return c;
+    })
+    .build();
+```
+
+## Thread safety & lifecycle
+
+`BizowieAPI` instances are immutable after `build()` and safe to share across
+threads. Build one per (site, credential) pair at application startup and
+reuse it. There is no `close()` &mdash; each `call` opens its own
+`HttpURLConnection` and there is no internal connection pool.
 
 ## Build / Test
 

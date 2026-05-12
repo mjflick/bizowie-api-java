@@ -6,12 +6,12 @@
 
     <groupId>com.bizowie</groupId>
     <artifactId>bizowie-api</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
     <packaging>jar</packaging>
 
     <name>Bizowie API</name>
     <description>Java client for the Bizowie ERP API (https://bizowie.com).</description>
-    <url>https://github.com/mjflick/bizowie-api-java</url>
+    <url>https://bizowie.com</url>
     <inceptionYear>2013</inceptionYear>
 
     <licenses>

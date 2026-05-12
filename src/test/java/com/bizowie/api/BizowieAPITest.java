@@ -14,14 +14,12 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,19 +73,18 @@ class BizowieAPITest {
         };
     }
 
-    private BizowieAPI client(boolean v2) {
+    private BizowieAPI client() {
         return BizowieAPI.builder()
                 .apiKey("ak")
                 .secretKey("sk")
                 .site("example.invalid")
-                .v2(v2)
                 .httpFactory(localFactory())
                 .build();
     }
 
     @Test
     void missingMethodThrows() {
-        BizowieAPI bz = client(false);
+        BizowieAPI bz = client();
         BizowieAPIException ex = assertThrows(BizowieAPIException.class, () -> bz.call("", null));
         assertEquals("[Bizowie::API] fatal error: no method given", ex.getMessage());
     }
@@ -100,42 +97,18 @@ class BizowieAPITest {
     }
 
     @Test
-    void v1SendsMultipart() {
-        responseBody = "{\"success\":1,\"id\":42}";
-        Map<String, Object> params = new HashMap<>();
-        params.put("comment", "hi");
-
-        BizowieAPIResponse r = client(false).call("databases/add_note/1/2/3", params);
-
-        RecordedRequest req = recorded.get();
-        assertEquals("/bz/api/databases/add_note/1/2/3", req.path);
-        assertEquals("POST", req.method);
-        assertNotNull(req.contentType);
-        assertTrue(req.contentType.startsWith("multipart/form-data; boundary="), req.contentType);
-        String body = new String(req.body, StandardCharsets.UTF_8);
-        assertTrue(body.contains("name=\"api_key\""));
-        assertTrue(body.contains("name=\"secret_key\""));
-        assertTrue(body.contains("name=\"site\""));
-        assertTrue(body.contains("name=\"request\""));
-        assertTrue(body.contains("\"comment\":\"hi\""));
-        assertEquals("Bizowie::API", req.userAgent);
-
-        assertTrue(r.isSuccess());
-        assertEquals(42, ((Number) r.getData().get("id")).intValue());
-        assertFalse(r.getData().containsKey("success"));
-    }
-
-    @Test
-    void v2SendsJsonBodyWithFormDataContentType() {
+    void sendsJsonBodyWithFormDataContentType() {
         responseBody = "{\"success\":true,\"ok\":1}";
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("foo", "bar");
 
-        BizowieAPIResponse r = client(true).call("things/list", params);
+        BizowieAPIResponse r = client().call("things/list", params);
 
         RecordedRequest req = recorded.get();
         assertEquals("/bz/apiv2/call/things/list", req.path);
+        assertEquals("POST", req.method);
         assertEquals("form-data", req.contentType);
+        assertEquals("Bizowie::API", req.userAgent);
         String body = new String(req.body, StandardCharsets.UTF_8);
         assertTrue(body.startsWith("{"), body);
         assertTrue(body.contains("\"api_key\":\"ak\""));
@@ -143,14 +116,16 @@ class BizowieAPITest {
         assertTrue(body.contains("\"api_version\":\"1.00\""));
         assertTrue(body.contains("\"foo\":\"bar\""));
         assertTrue(r.isSuccess());
+        assertEquals(1, ((Number) r.getData().get("ok")).intValue());
+        assertFalse(r.getData().containsKey("success"));
     }
 
     @Test
-    void v2UsesCustomApiVersion() {
+    void usesCustomApiVersion() {
         responseBody = "{\"success\":1}";
         BizowieAPI bz = BizowieAPI.builder()
                 .apiKey("ak").secretKey("sk").site("example.invalid")
-                .v2(true).apiVersion("2.50")
+                .apiVersion("2.50")
                 .httpFactory(localFactory())
                 .build();
         bz.call("ping", null);
@@ -159,9 +134,20 @@ class BizowieAPITest {
     }
 
     @Test
+    void perCallApiVersionWins() {
+        responseBody = "{\"success\":1}";
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("api_version", "9.99");
+        client().call("ping", params);
+        String body = new String(recorded.get().body, StandardCharsets.UTF_8);
+        assertTrue(body.contains("\"api_version\":\"9.99\""), body);
+        assertFalse(body.contains("\"api_version\":\"1.00\""), body);
+    }
+
+    @Test
     void unprocessedFlagOnBadJson() {
         responseBody = "not json at all";
-        BizowieAPIResponse r = client(false).call("anything", null);
+        BizowieAPIResponse r = client().call("anything", null);
         assertFalse(r.isSuccess());
         assertEquals(1, ((Number) r.getData().get("unprocessed")).intValue());
     }
@@ -169,7 +155,7 @@ class BizowieAPITest {
     @Test
     void successFalseWhenAbsent() {
         responseBody = "{\"hello\":\"world\"}";
-        BizowieAPIResponse r = client(false).call("anything", null);
+        BizowieAPIResponse r = client().call("anything", null);
         assertFalse(r.isSuccess());
         assertEquals("world", r.getData().get("hello"));
     }
